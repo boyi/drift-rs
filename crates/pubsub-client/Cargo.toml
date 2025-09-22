@@ -19,5 +19,5 @@ solana-rpc-client-api = "2.2"
 thiserror = "1"
 tokio = { version = "1.42", features = ["full"] }
 tokio-stream = "0.1"
-tokio-tungstenite = { version = "0.26.0", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.26.0", features = ["rustls-tls-webpki-roots"] }
 url = "2.5"
