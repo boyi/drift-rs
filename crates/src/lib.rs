@@ -1022,6 +1022,29 @@ impl DriftClient {
         sync: bool,
     ) -> SdkResult<()> {
         self.backend
+            .grpc_subscribe(endpoint, Some(x_token), opts, sync)
+            .await
+    }
+
+    /// Subscribe to all: markets, oracles, and slot updates over gRPC with optional authentication
+    ///
+    /// This will automatically subscribe to all configured markets and oracles.
+    /// Call with empty options if it suffices, otherwise gRPC will stream events
+    /// to all drift accounts regardless.
+    ///
+    /// * `endpoint` - the gRPC endpoint
+    /// * `x_token` - optional gRPC authentication X token (None for no authentication)
+    /// * `opts` - configure callbacks and caching
+    /// * `sync` - sync all oracle,market,and User accounts on startup
+    ///
+    pub async fn grpc_subscribe_with_optional_token(
+        &self,
+        endpoint: String,
+        x_token: Option<String>,
+        opts: GrpcSubscribeOpts,
+        sync: bool,
+    ) -> SdkResult<()> {
+        self.backend
             .grpc_subscribe(endpoint, x_token, opts, sync)
             .await
     }
@@ -1219,13 +1242,16 @@ impl DriftClientBackend {
     async fn grpc_subscribe(
         &self,
         endpoint: String,
-        x_token: String,
+        x_token: Option<String>,
         opts: GrpcSubscribeOpts,
         sync: bool,
     ) -> SdkResult<()> {
         log::debug!(target: "grpc", "subscribing to grpc with config: commitment: {:?}, interslot updates: {:?}", opts.commitment, opts.interslot_updates);
-        let mut grpc = DriftGrpcClient::new(endpoint.clone(), x_token.clone())
-            .grpc_connection_opts(opts.connection_opts.clone());
+        let mut grpc = match &x_token {
+            Some(token) => DriftGrpcClient::new(endpoint.clone(), token.clone()),
+            None => DriftGrpcClient::new_with_optional_token(endpoint.clone(), None),
+        }
+        .grpc_connection_opts(opts.connection_opts.clone());
 
         if sync {
             // the DriftClientBackend syncs marketmaps by default
@@ -1334,8 +1360,11 @@ impl DriftClientBackend {
 
         // oracle pubkeys are subscribed individually
         // due to ownership differences
-        let mut oracles_grpc =
-            DriftGrpcClient::new(endpoint, x_token).grpc_connection_opts(opts.connection_opts);
+        let mut oracles_grpc = match &x_token {
+            Some(token) => DriftGrpcClient::new(endpoint, token.clone()),
+            None => DriftGrpcClient::new_with_optional_token(endpoint, None),
+        }
+        .grpc_connection_opts(opts.connection_opts);
 
         let oracle_pubkeys: Vec<String> = self
             .oracle_map

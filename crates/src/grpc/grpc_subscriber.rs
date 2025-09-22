@@ -152,6 +152,8 @@ pub struct GrpcConnectionOpts {
     timeout_ms: Option<u64>,
     /// Max message size before decoding, full blocks can be super large, default is 1GiB
     max_decoding_message_size: usize,
+    /// Whether to use TLS/HTTPS. None means auto-detect based on endpoint URL scheme
+    use_tls: Option<bool>,
 }
 
 impl Default for GrpcConnectionOpts {
@@ -169,6 +171,7 @@ impl Default for GrpcConnectionOpts {
             tcp_nodelay: None,
             timeout_ms: None,
             max_decoding_message_size: 1024 * 1024 * 1024,
+            use_tls: None,
         }
     }
 }
@@ -216,7 +219,7 @@ pub enum GrpcError {
 /// specialized Drift gRPC client
 pub struct DriftGrpcClient {
     endpoint: String,
-    x_token: String,
+    x_token: Option<String>,
     grpc_opts: Option<GrpcConnectionOpts>,
     on_account_hooks: Hooks,
     on_slot: Box<dyn Fn(Slot) + Send + Sync + 'static>,
@@ -229,6 +232,16 @@ impl DriftGrpcClient {
     ///
     /// It can be started by calling `subscribe`
     pub fn new(endpoint: String, x_token: String) -> Self {
+        Self::new_with_optional_token(endpoint, Some(x_token))
+    }
+
+    /// Create a new `DriftGrpcClient` with optional authentication token
+    ///
+    /// * `endpoint` - the gRPC endpoint URL
+    /// * `x_token` - optional authentication X token (None for no authentication)
+    ///
+    /// It can be started by calling `subscribe`
+    pub fn new_with_optional_token(endpoint: String, x_token: Option<String>) -> Self {
         Self {
             endpoint,
             x_token,
@@ -302,7 +315,7 @@ impl DriftGrpcClient {
     ) -> Result<UnsubHandle, GrpcError> {
         let mut grpc_client = grpc_connect(
             self.endpoint.as_str(),
-            self.x_token.as_str(),
+            self.x_token.as_deref(),
             self.grpc_opts.clone().unwrap_or_default(),
         )
         .await
@@ -606,21 +619,41 @@ impl GeyserSubscribeOpts {
 /// Returns a new `GeyserGrpcClient`
 async fn grpc_connect(
     endpoint: &str,
-    x_token: &str,
+    x_token: Option<&str>,
     opts: GrpcConnectionOpts,
 ) -> Result<GeyserGrpcClient<impl Interceptor>, GeyserGrpcBuilderError> {
     info!(target: "grpc", "gRPC connecting: {endpoint}...");
-    let mut tls_config = ClientTlsConfig::new().with_native_roots();
-    if let Ok(path) = &std::env::var("GRPC_CA_CERT") {
-        let bytes = tokio::fs::read(path)
-            .await
-            .expect("GRPC_CA_CERT path exists");
-        tls_config = tls_config.ca_certificate(Certificate::from_pem(bytes));
+
+    // Determine if TLS should be used
+    let use_tls = match opts.use_tls {
+        Some(use_tls) => use_tls,
+        None => {
+            // Auto-detect based on URL scheme
+            endpoint.starts_with("https://")
+                || (!endpoint.starts_with("http://") && !endpoint.contains("://"))
+        }
+    };
+
+    let mut builder = GeyserGrpcClient::build_from_shared(endpoint.to_string())?;
+
+    // Set x_token if provided
+    if let Some(token) = x_token {
+        builder = builder.x_token(Some(token))?;
     }
-    let mut builder = GeyserGrpcClient::build_from_shared(endpoint.to_string())?
-        .x_token(Some(x_token))?
-        .tls_config(tls_config)?
-        .max_decoding_message_size(opts.max_decoding_message_size);
+
+    // Configure TLS if needed
+    if use_tls {
+        let mut tls_config = ClientTlsConfig::new().with_native_roots();
+        if let Ok(path) = &std::env::var("GRPC_CA_CERT") {
+            let bytes = tokio::fs::read(path)
+                .await
+                .expect("GRPC_CA_CERT path exists");
+            tls_config = tls_config.ca_certificate(Certificate::from_pem(bytes));
+        }
+        builder = builder.tls_config(tls_config)?;
+    }
+
+    let mut builder = builder.max_decoding_message_size(opts.max_decoding_message_size);
 
     if let Some(duration) = opts.connect_timeout_ms {
         builder = builder.connect_timeout(Duration::from_millis(duration));
