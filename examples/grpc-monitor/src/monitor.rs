@@ -98,6 +98,8 @@ pub async fn start_monitoring(
     grpc_token: Option<String>,
     price_threshold: Option<f64>,
     sub_account_index: u16,
+    mode: String,
+    amount: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     display::print_header("BTC-USDC gRPC Monitor");
 
@@ -111,6 +113,8 @@ pub async fn start_monitoring(
             grpc_token.clone(),
             price_threshold,
             sub_account_index,
+            mode.clone(),
+            amount,
         ).await {
             Ok(_) => {
                 display::print_info("Monitor ended normally");
@@ -135,11 +139,13 @@ async fn start_monitoring_inner(
     grpc_token: Option<String>,
     price_threshold: Option<f64>,
     sub_account_index: u16,
+    mode: String,
+    amount: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Drift client
     display::print_info("Initializing Drift client...");
-    let rpc_client = RpcClient::new(rpc_url);
+    let rpc_client = RpcClient::new(rpc_url.clone());
 
     let drift = match DriftClient::new(context, rpc_client, wallet.clone()).await {
         Ok(client) => {
@@ -303,6 +309,56 @@ async fn start_monitoring_inner(
 
     display::print_success("Starting real-time monitoring...");
     display::print_divider();
+
+    // Execute trading mode if specified
+    if mode != "monitor" {
+        display::print_info(&format!("⏱️ Waiting 5 seconds before executing {} mode...", mode));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        let signature = match mode.as_str() {
+            "swap-jlp" => {
+                display::print_header("Executing JLP Swap");
+                match crate::trading::buy_jlp_via_jupiter(&drift, amount).await {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        display::print_error(&format!("Failed to execute JLP swap: {}", e));
+                        return Err(e);
+                    }
+                }
+            }
+            "buy-btc" => {
+                display::print_header("Executing BTC-PERP Buy Order");
+                match crate::trading::buy_btc_perp(&drift, amount).await {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        display::print_error(&format!("Failed to execute BTC buy order: {}", e));
+                        return Err(e);
+                    }
+                }
+            }
+            _ => unreachable!()
+        };
+
+        // Monitor transaction status
+        display::print_divider();
+        display::print_info("Monitoring transaction status...");
+        match crate::trading::monitor_transaction(&drift, &signature, 60, &rpc_url).await {
+            Ok(true) => {
+                display::print_success("Transaction confirmed successfully!");
+                display::print_info("Continuing to monitor balance changes...");
+            }
+            Ok(false) => {
+                display::print_error("Transaction failed or timed out");
+            }
+            Err(e) => {
+                display::print_error(&format!("Error monitoring transaction: {}", e));
+            }
+        }
+        display::print_divider();
+
+        // Wait a bit for balances to update
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 
     loop {
         tokio::select! {

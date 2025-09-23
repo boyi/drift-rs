@@ -1,16 +1,24 @@
-# gRPC Real-time Monitor
+# gRPC Real-time Monitor with Trading
 
-Real-time monitoring of BTC prices and account balances using Drift Protocol's gRPC streaming API.
+Real-time monitoring of BTC prices and account balances using Drift Protocol's gRPC streaming API, with integrated trading capabilities for JLP swaps and BTC perpetual orders.
 
 ## Features
 
+### Monitoring Features
 - 🚀 **Real-time Price Updates**: Monitor BTC-PERP price changes with customizable thresholds
 - 💰 **Balance Monitoring**: Track USDC spot balance changes in real-time
+- 💎 **JLP Tracking**: Monitor JLP (Jupiter LP) token balance
 - 📊 **Position Tracking**: Monitor BTC perpetual positions and unrealized PnL
 - 🎨 **Colorful Output**: Color-coded display for easy reading
 - 🔐 **Flexible Authentication**: Support for optional authentication (great for local testing)
 - 🌐 **HTTP/HTTPS Support**: Auto-detect TLS based on URL or manually configure
 - 📁 **Secure Key Management**: Load private keys from JSON files
+
+### Trading Features
+- 🔄 **JLP Swap**: Buy JLP tokens using Jupiter swap integration
+- 📈 **BTC Perpetual**: Place market buy orders for BTC-PERP
+- ⏳ **Transaction Monitoring**: Track transaction status until confirmation
+- 💵 **Configurable Amounts**: Set custom USDC amounts for trades
 
 ## Usage
 
@@ -24,11 +32,20 @@ Real-time monitoring of BTC prices and account balances using Drift Protocol's g
 
 2. **Basic Usage**:
    ```bash
-   # Monitor with a Solana CLI wallet file (reads URLs from .env)
+   # Monitor only (default mode)
    cargo run -- --wallet-file ~/.config/solana/id.json
 
+   # Buy 10 USDC worth of JLP via Jupiter swap
+   cargo run -- --wallet-file wallet.json --mode swap-jlp
+
+   # Buy 10 USDC worth of BTC perpetual
+   cargo run -- --wallet-file wallet.json --mode buy-btc
+
+   # Custom amount (e.g., 25 USDC)
+   cargo run -- --wallet-file wallet.json --mode swap-jlp --amount 25.0
+
    # Use mainnet instead of devnet
-   cargo run -- --wallet-file wallet.json --mainnet
+   cargo run -- --wallet-file wallet.json --mainnet --mode monitor
    ```
 
 ### Advanced Configuration
@@ -94,9 +111,13 @@ The application reads configuration from environment variables (`.env` file):
 | `--rpc-url` | Solana RPC endpoint | From `RPC_URL` env var or network default |
 | `--price-threshold` | Price change alert threshold | None (shows all changes) |
 | `--mainnet` | Use mainnet instead of devnet | false |
+| `--sub-account` | Sub account index to monitor | 0 |
+| `--mode` | Operation mode: `monitor`, `swap-jlp`, `buy-btc` | `monitor` |
+| `--amount` | USDC amount for trading modes | 10.0 |
 
 ## What You'll See
 
+### Monitor Mode (Default)
 The monitor displays real-time updates with color coding:
 
 ```
@@ -122,8 +143,41 @@ The monitor displays real-time updates with color coding:
 📋 Current Status
   BTC-PERP: 67,234.500000
   USDC Balance: 1,234.567890 USDC
+  JLP Balance: 150.234567 JLP
   BTC Position: 0.100000 (PnL: $12.34)
 ─────────────────────────────────────────────────────────────
+```
+
+### Trading Modes
+When using `--mode swap-jlp` or `--mode buy-btc`, you'll see additional output:
+
+```
+🎯 Mode: swap-jlp
+💵 Trading amount: 10 USDC
+
+[... monitoring setup ...]
+
+⏱️ Waiting 5 seconds before executing swap-jlp mode...
+
+Executing JLP Swap
+═══════════════════════════════════════════════════════════
+🔄 Initiating Jupiter swap to buy JLP with 10 USDC
+📍 Swapping from USDC (market 0) to JLP (market 7)
+🔍 Querying Jupiter for best swap route...
+✅ Found swap route with 3 instructions
+🔨 Building swap transaction...
+📤 Sending transaction...
+✅ Transaction sent: 5x7Abc...
+
+─────────────────────────────────────────────────────────────
+⏳ Monitoring transaction: 5x7Abc...
+📍 Status: Confirmed (15 confirmations)
+✅ Transaction Confirmed with 15 confirmations
+✅ Transaction confirmed successfully!
+ℹ️ Continuing to monitor balance changes...
+─────────────────────────────────────────────────────────────
+
+[... continues monitoring for balance changes ...]
 ```
 
 ## Monitoring Behavior

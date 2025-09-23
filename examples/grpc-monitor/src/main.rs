@@ -6,6 +6,7 @@ use solana_sdk::signature::Keypair;
 
 mod display;
 mod monitor;
+mod trading;
 
 /// Real-time gRPC monitoring of BTC prices and USDC balance
 #[derive(FromArgs)]
@@ -41,6 +42,14 @@ struct Args {
     /// sub account index to monitor (default is 0)
     #[argh(option)]
     sub_account: Option<u16>,
+
+    /// operation mode: monitor (default), swap-jlp (buy JLP), buy-btc (buy BTC-PERP)
+    #[argh(option, default = "String::from(\"monitor\")")]
+    mode: String,
+
+    /// amount in USDC to use for trading (default is 10)
+    #[argh(option, default = "10.0")]
+    amount: f64,
 }
 
 
@@ -150,6 +159,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
+    // Validate mode
+    let mode = match args.mode.as_str() {
+        "monitor" | "swap-jlp" | "buy-btc" => args.mode.clone(),
+        _ => {
+            eprintln!("❌ Invalid mode: {}. Use 'monitor', 'swap-jlp', or 'buy-btc'", args.mode);
+            std::process::exit(1);
+        }
+    };
+
+    println!("🎯 Mode: {}", mode);
+    if mode != "monitor" {
+        println!("💵 Trading amount: {} USDC", args.amount);
+    }
+    println!();
+
     // Start monitoring
     monitor::start_monitoring(
         context,
@@ -159,6 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         grpc_token,
         args.price_threshold,
         args.sub_account.unwrap_or(0),
+        mode,
+        args.amount,
     )
     .await?;
 
