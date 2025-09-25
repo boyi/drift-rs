@@ -129,6 +129,8 @@ pub fn print_status_summary(
     jlp_balance: Option<i64>,
     btc_position_size: Option<i64>,
     btc_position_pnl: Option<i128>,
+    btc_funding_rate: Option<i64>,
+    btc_funding_rate_24h: Option<i64>,
 ) {
     print_divider();
     println!("{}", "📋 Current Status".bright_white().bold());
@@ -161,6 +163,32 @@ pub fn print_status_summary(
         println!("  BTC Position: {}", "No position data".bright_black());
     }
 
+    if let (Some(funding_rate), Some(funding_rate_24h)) = (btc_funding_rate, btc_funding_rate_24h) {
+        let funding_rate_precision = 1_000_000_000_000.0; // 1e12
+        let rate_pct = funding_rate as f64 / funding_rate_precision;
+        let rate_24h_pct = funding_rate_24h as f64 / funding_rate_precision;
+
+        let rate_str = if rate_pct > 0.0 {
+            format!("{:+.6}%", rate_pct).bright_green()
+        } else if rate_pct < 0.0 {
+            format!("{:+.6}%", rate_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_pct).white()
+        };
+
+        let rate_24h_str = if rate_24h_pct > 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_green()
+        } else if rate_24h_pct < 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_24h_pct).white()
+        };
+
+        println!("  BTC Funding Rate: {} (24h avg: {})", rate_str, rate_24h_str);
+    } else {
+        println!("  BTC Funding Rate: {}", "No funding rate data".bright_black());
+    }
+
     print_divider();
 }
 
@@ -172,6 +200,43 @@ pub fn print_error(message: &str) {
 /// Print success message
 pub fn print_success(message: &str) {
     println!("{} {}", "✅".bright_green(), message.bright_green());
+}
+
+/// Print funding rate update notification
+pub fn print_funding_rate_update(market: &str, funding_rate: i64, funding_rate_24h: i64) {
+    let timestamp = current_timestamp();
+
+    // Convert funding rate from i64 to percentage
+    // Based on analysis: chain-stored funding rates use 1e12 precision
+    // (FUNDING_RATE_PRECISION * FUNDING_RATE_BUFFER = 1e9 * 1e3 = 1e12)
+    let funding_rate_precision = 1_000_000_000_000.0; // 1e12
+    let rate_pct = funding_rate as f64 / funding_rate_precision;
+    let rate_24h_pct = funding_rate_24h as f64 / funding_rate_precision;
+
+    let rate_str = if rate_pct > 0.0 {
+        format!("{:+.6}%", rate_pct).bright_green()
+    } else if rate_pct < 0.0 {
+        format!("{:+.6}%", rate_pct).bright_red()
+    } else {
+        format!("{:+.6}%", rate_pct).white()
+    };
+
+    let rate_24h_str = if rate_24h_pct > 0.0 {
+        format!("{:+.6}%", rate_24h_pct).bright_green()
+    } else if rate_24h_pct < 0.0 {
+        format!("{:+.6}%", rate_24h_pct).bright_red()
+    } else {
+        format!("{:+.6}%", rate_24h_pct).white()
+    };
+
+    println!(
+        "{} {} Funding Rate: {} current: {} 24h avg: {}",
+        timestamp,
+        "💰".bright_yellow(),
+        market.bright_white().bold(),
+        rate_str,
+        rate_24h_str
+    );
 }
 
 /// Print info message

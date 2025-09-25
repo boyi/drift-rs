@@ -14,6 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let current_dir = std::env::current_dir()?.canonicalize()?;
 
+    // Tell cargo to rerun only when these files change
+    println!("cargo:rerun-if-changed=res/drift.json");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=crates/drift-ffi-sys/Cargo.toml");
+    println!("cargo:rerun-if-changed=crates/drift-ffi-sys/src");
+
     // Generate IDL types from 'res/drift.json'
     let idl_source_path = current_dir.join("res/drift.json");
     let idl_mod_path = current_dir.join("crates/src/drift_idl.rs");
@@ -32,6 +38,23 @@ fn generate_idl_types(
     idl_source_path: &Path,
     idl_mod_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Skip generation if output file is newer than source
+    if let (Ok(source_meta), Ok(output_meta)) = (
+        std::fs::metadata(idl_source_path),
+        std::fs::metadata(idl_mod_path)
+    ) {
+        if let (Ok(source_time), Ok(output_time)) = (
+            source_meta.modified(),
+            output_meta.modified()
+        ) {
+            if output_time > source_time {
+                println!("cargo:warning=IDL types up to date, skipping generation");
+                return Ok(());
+            }
+        }
+    }
+
+    println!("cargo:warning=Generating IDL types from {}", idl_source_path.display());
     let idl_mod_rs = drift_idl_gen::generate_rust_types(idl_source_path)
         .map_err(|err| format!("generating IDL failed: {err:?}"))?;
 

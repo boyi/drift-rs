@@ -191,6 +191,38 @@ let price = client.oracle_price(MarketId::perp(0));
 - **Example Implementations**: Market makers, swift trading
 - **Flexible gRPC**: Support for HTTP endpoints and optional authentication
 
+## Key Learnings from Real-time Monitor Development
+
+### Real-time Data Monitoring Architecture
+- **gRPC vs WebSocket**: gRPC provides more reliable streaming for high-frequency financial data
+- **Oracle Data Structure**: Oracle prices include slot numbers for freshness validation
+- **Account Data Precision**: Always use `get_token_amount()` for accurate balances, not raw `scaled_balance`
+- **Market Lookup**: Use string-based market lookup (`"btc-perp"`, `"usdc"`, `"jlp"`) for flexibility
+
+### gRPC Connection Management
+- **Auto-TLS Detection**: Automatically detect HTTPS/HTTP based on URL scheme
+- **Optional Authentication**: Support both authenticated and local testing environments
+- **Connection Resilience**: gRPC has built-in retry (3 attempts) but requires application-level reconnection for indefinite uptime
+- **Subscription Patterns**: Use `.usermap_on()` for account caching, explicit oracle subscriptions for price updates
+
+### Solana Account Data Handling
+- **Sub-account Addressing**: Always use `drift.wallet().sub_account(N)` not external wallet addresses
+- **Token Amount Calculation**: Account for cumulative interest using market account data
+- **Position Tracking**: Perpetual positions include base asset amount and unrealized PnL
+- **Precision Constants**: USDC/JLP use 6 decimals (1_000_000), price data uses PRICE_PRECISION_U64
+
+### Error Handling and User Experience
+- **Graceful Degradation**: Continue monitoring prices even when account data unavailable
+- **Informative Messages**: Distinguish between "no data" vs "initialization needed" vs "connection issues"
+- **Auto-recovery**: Implement outer retry loops for complete service restoration
+- **Progress Tracking**: Use colored terminal output with timestamps for better UX
+
+### Development Best Practices
+- **Environment Configuration**: Use `.env` files with fallback defaults for different networks
+- **Wallet Security**: Support Solana CLI JSON format for secure key management
+- **Modular Design**: Separate display logic, monitoring state, and connection management
+- **Real-time Responsiveness**: 100ms update intervals for price-sensitive applications
+
 ## Important Notes
 
 1. **Architecture Requirement**: MUST use x86_64 toolchain. ARM/aarch64 will cause runtime deserialization errors

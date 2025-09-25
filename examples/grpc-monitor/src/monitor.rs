@@ -20,6 +20,8 @@ struct MonitorState {
     jlp_balance: Option<i64>,
     btc_position_size: Option<i64>,
     btc_position_pnl: Option<i128>,
+    btc_funding_rate: Option<i64>,
+    btc_funding_rate_24h: Option<i64>,
 }
 
 impl MonitorState {
@@ -84,6 +86,20 @@ impl MonitorState {
             display::print_position_update("BTC-PERP", new_size, new_pnl as i64, PRICE_PRECISION_U64, BASE_PRECISION_U64);
             self.btc_position_size = Some(new_size);
             self.btc_position_pnl = Some(new_pnl);
+        }
+
+        changed
+    }
+
+    fn update_btc_funding_rate(&mut self, new_funding_rate: i64, new_funding_rate_24h: i64) -> bool {
+        let rate_changed = self.btc_funding_rate.map_or(true, |old| old != new_funding_rate);
+        let rate_24h_changed = self.btc_funding_rate_24h.map_or(true, |old| old != new_funding_rate_24h);
+        let changed = rate_changed || rate_24h_changed;
+
+        if changed {
+            display::print_funding_rate_update("BTC-PERP", new_funding_rate, new_funding_rate_24h);
+            self.btc_funding_rate = Some(new_funding_rate);
+            self.btc_funding_rate_24h = Some(new_funding_rate_24h);
         }
 
         changed
@@ -370,6 +386,8 @@ async fn start_monitoring_inner(
                     state.jlp_balance,
                     state.btc_position_size,
                     state.btc_position_pnl,
+                    state.btc_funding_rate,
+                    state.btc_funding_rate_24h,
                 );
             }
             _ = update_timer.tick() => {
@@ -379,6 +397,18 @@ async fn start_monitoring_inner(
                 if let Some(oracle_data) = drift.try_get_oracle_price_data_and_slot(btc_perp_market_id) {
                     let price = oracle_data.data.price as f64;
                     state.update_btc_price(price, price_threshold);
+                }
+
+                // Check BTC-PERP funding rate
+                match drift.try_get_perp_market_account(btc_perp_market_id.index()) {
+                    Ok(perp_market) => {
+                        let funding_rate = perp_market.amm.last_funding_rate;
+                        let funding_rate_24h = perp_market.amm.last24h_avg_funding_rate;
+                        state.update_btc_funding_rate(funding_rate, funding_rate_24h);
+                    }
+                    Err(_) => {
+                        // Perp market data not available, this is fine
+                    }
                 }
 
                 // Check user account updates
