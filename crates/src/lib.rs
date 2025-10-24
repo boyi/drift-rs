@@ -1568,11 +1568,14 @@ impl DriftClientBackend {
     pub async fn get_latest_blockhash(&self) -> SdkResult<Hash> {
         match self.blockhash_subscriber.get_latest_blockhash() {
             Some(hash) => Ok(hash),
-            None => self
+            None => {
+                self
                 .rpc_client
-                .get_latest_blockhash()
+                .get_latest_blockhash_with_commitment(CommitmentConfig::finalized())
                 .await
-                .map_err(|err| SdkError::Rpc(Box::new(err))),
+                .map(|(hash, _)| hash)
+                .map_err(|err| SdkError::Rpc(Box::new(err)))
+            },
         }
     }
 

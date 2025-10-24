@@ -13,6 +13,9 @@ use tokio;
 struct Args {
     #[clap(long, action, help = "Use gRPC for event subscription")]
     grpc: bool,
+
+    #[clap(long, action, help = "Disable authentication (useful for local testing)")]
+    no_auth: bool,
 }
 
 #[tokio::main]
@@ -23,8 +26,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut event_subscriber = if args.grpc {
         let grpc_endpoint = env::var("GRPC_ENDPOINT").expect("GRPC_ENDPOINT must be set");
-        let grpc_x_token = env::var("GRPC_X_TOKEN").expect("GRPC_X_TOKEN must be set");
-        EventSubscriber::subscribe_grpc(grpc_endpoint, grpc_x_token, PROGRAM_ID)
+
+        // Handle optional authentication
+        let grpc_x_token = if args.no_auth {
+            None
+        } else {
+            match env::var("GRPC_X_TOKEN") {
+                Ok(token) => Some(token),
+                Err(_) => {
+                    eprintln!("Warning: GRPC_X_TOKEN not set. Use --no-auth flag for local testing without authentication.");
+                    eprintln!("If connecting to a remote server, please set GRPC_X_TOKEN environment variable.");
+                    return Err("GRPC_X_TOKEN required for authenticated connections".into());
+                }
+            }
+        };
+
+        println!("Connecting to gRPC endpoint: {}", grpc_endpoint);
+        if grpc_x_token.is_none() {
+            println!("Authentication disabled (local testing mode)");
+        }
+
+        EventSubscriber::subscribe_grpc_with_optional_token(grpc_endpoint, grpc_x_token, PROGRAM_ID)
             .await
             .expect("error subscribing to grpc events")
     } else {

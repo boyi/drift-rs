@@ -139,6 +139,14 @@ impl EventSubscriber {
         x_token: String,
         sub_account: Pubkey,
     ) -> SdkResult<DriftEventStream> {
+        grpc_log_stream(endpoint, Some(x_token), sub_account).await
+    }
+
+    pub async fn subscribe_grpc_with_optional_token(
+        endpoint: String,
+        x_token: Option<String>,
+        sub_account: Pubkey,
+    ) -> SdkResult<DriftEventStream> {
         grpc_log_stream(endpoint, x_token, sub_account).await
     }
 }
@@ -229,7 +237,7 @@ impl LogEventStream {
 
 struct GrpcLogEventStream {
     grpc_endpoint: String,
-    grpc_x_token: String,
+    grpc_x_token: Option<String>,
     sub_account: Pubkey,
     event_tx: Sender<DriftEvent>,
     commitment: CommitmentConfig,
@@ -244,7 +252,7 @@ impl GrpcLogEventStream {
             "grpc log stream connecting: {sub_account:?}"
         );
 
-        let mut grpc = DriftGrpcClient::new(self.grpc_endpoint.clone(), self.grpc_x_token.clone())
+        let mut grpc = DriftGrpcClient::new_with_optional_token(self.grpc_endpoint.clone(), self.grpc_x_token.clone())
             .grpc_connection_opts(GrpcConnectionOpts::default());
 
         let (raw_event_tx, mut raw_event_rx): (
@@ -360,7 +368,7 @@ async fn log_stream(ws: Arc<PubsubClient>, sub_account: Pubkey) -> SdkResult<Dri
 /// Creates a grpc-backed event stream
 async fn grpc_log_stream(
     endpoint: String,
-    x_token: String,
+    x_token: Option<String>,
     sub_account: Pubkey,
 ) -> SdkResult<DriftEventStream> {
     debug!(target: LOG_TARGET, "grpc stream events for {sub_account:?}");
@@ -370,7 +378,7 @@ async fn grpc_log_stream(
     let join_handle = tokio::spawn(async move {
         GrpcLogEventStream {
             grpc_endpoint: endpoint.clone(),
-            grpc_x_token: x_token.clone(),
+            grpc_x_token: x_token,
             sub_account,
             event_tx: event_tx.clone(),
             commitment: CommitmentConfig::confirmed(),
