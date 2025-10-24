@@ -138,12 +138,16 @@ impl JitProxyClient {
 
         let tx_builder = TransactionBuilder::new(
             self.drift_client.program_data(),
+            &self.drift_client.backend.perp_market_map,
+            &self.drift_client.backend.spot_market_map,
             *maker_params.0,
             Cow::Borrowed(maker_params.1),
             false,
         );
 
         let program_data = tx_builder.program_data();
+        let perp_market_map = tx_builder.perp_market_map();
+        let spot_market_map = tx_builder.spot_market_map();
         let account_data = tx_builder.account_data();
 
         let writable_markets = match order.market_type {
@@ -158,6 +162,8 @@ impl JitProxyClient {
         let maker_authority = maker_params.1.authority;
         let mut accounts = build_accounts(
             program_data,
+            perp_market_map,
+            spot_market_map,
             self::accounts::Jit {
                 state: *state_account(),
                 user: *maker_params.0,
@@ -246,6 +252,8 @@ impl JitProxyClient {
     ) -> SdkResult<VersionedMessage> {
         let maker_authority = maker_account_data.authority;
         let program_data = self.drift_client.program_data();
+        let perp_market_map = &self.drift_client.backend.perp_market_map;
+        let spot_market_map = &self.drift_client.backend.spot_market_map;
         let signed_order_info_params = signed_order_info.order_params();
         let account_data = maker_account_data;
         let market_index = signed_order_info_params.market_index;
@@ -262,6 +270,8 @@ impl JitProxyClient {
 
         let mut accounts = build_accounts(
             program_data,
+            perp_market_map,
+            spot_market_map,
             self::accounts::JitSignedMsg {
                 state: *state_account(),
                 authority: maker_authority,
@@ -315,6 +325,8 @@ impl JitProxyClient {
 
         let message = TransactionBuilder::new(
             self.drift_client.program_data(),
+            &self.drift_client.backend.perp_market_map,
+            &self.drift_client.backend.spot_market_map,
             *maker_pubkey,
             Cow::Borrowed(maker_account_data),
             false,
