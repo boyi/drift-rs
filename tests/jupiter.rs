@@ -1,9 +1,9 @@
 use drift_rs::{
     event_subscriber::RpcClient,
     jupiter::{JupiterSwapApi, SwapMode},
-    types::{accounts::User, Context, MarketId},
+    types::{Context, MarketId},
     utils::test_envs::{mainnet_endpoint, mainnet_test_keypair},
-    DriftClient, TransactionBuilder, Wallet,
+    DriftClient, Wallet,
 };
 use solana_sdk::{
     instruction::InstructionError, native_token::LAMPORTS_PER_SOL, transaction::TransactionError,
@@ -37,10 +37,10 @@ async fn jupiter_swap_exact_in_udsc_to_sol() {
     let token_in = MarketId::QUOTE_SPOT;
     let token_out = MarketId::spot(1);
 
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
+    // let user: User = client
+    //     .get_user_account(&wallet.default_sub_account())
+    //     .await
+    //     .expect("exists");
 
     let jupiter_swap_info = client
         .jupiter_swap_query(
@@ -70,12 +70,7 @@ async fn jupiter_swap_exact_in_udsc_to_sol() {
     let out_token_account =
         Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
 
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .jupiter_swap(
         jupiter_swap_info,
         &in_market,
@@ -110,10 +105,10 @@ async fn jupiter_swap_exact_out_udsc_to_sol() {
     let token_in = MarketId::QUOTE_SPOT;
     let token_out = MarketId::spot(1);
 
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
+    // let user: User = client
+    //     .get_user_account(&wallet.default_sub_account())
+    //     .await
+    //     .expect("exists");
 
     let jupiter_swap_info = client
         .jupiter_swap_query(
@@ -143,12 +138,7 @@ async fn jupiter_swap_exact_out_udsc_to_sol() {
     let out_token_account =
         Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
 
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .jupiter_swap(
         jupiter_swap_info,
         &in_market,
@@ -193,10 +183,10 @@ async fn jupiter_swap_exact_out_udsc_jto() {
         .spot_market_config_by_index(token_out.index())
         .unwrap();
 
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
+    // let user: User = client
+    //     .get_user_account(&wallet.default_sub_account())
+    //     .await
+    //     .expect("exists");
 
     let jupiter_swap_info = client
         .jupiter_swap_query(
@@ -217,12 +207,7 @@ async fn jupiter_swap_exact_out_udsc_jto() {
     let out_token_account =
         Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
 
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .jupiter_swap(
         jupiter_swap_info,
         &in_market,
@@ -267,10 +252,10 @@ async fn jupiter_swap_sol_unwrap() {
         .spot_market_config_by_index(token_out.index())
         .unwrap();
 
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
+    // let user: User = client
+    //     .get_user_account(&wallet.default_sub_account())
+    //     .await
+    //     .expect("exists");
 
     let jupiter_swap_info = client
         .jupiter_swap_query(
@@ -291,12 +276,7 @@ async fn jupiter_swap_sol_unwrap() {
     let out_token_account =
         Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
 
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .jupiter_swap(
         jupiter_swap_info,
         &in_market,

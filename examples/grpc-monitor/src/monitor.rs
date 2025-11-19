@@ -22,6 +22,13 @@ struct MonitorState {
     btc_position_pnl: Option<i128>,
     btc_funding_rate: Option<i64>,
     btc_funding_rate_24h: Option<i64>,
+    btc_oracle_twap: Option<i64>,
+    sol_funding_rate: Option<i64>,
+    sol_funding_rate_24h: Option<i64>,
+    sol_oracle_twap: Option<i64>,
+    eth_funding_rate: Option<i64>,
+    eth_funding_rate_24h: Option<i64>,
+    eth_oracle_twap: Option<i64>,
 }
 
 impl MonitorState {
@@ -91,15 +98,49 @@ impl MonitorState {
         changed
     }
 
-    fn update_btc_funding_rate(&mut self, new_funding_rate: i64, new_funding_rate_24h: i64) -> bool {
+    fn update_btc_funding_rate(&mut self, new_funding_rate: i64, new_funding_rate_24h: i64, new_oracle_twap: i64) -> bool {
         let rate_changed = self.btc_funding_rate.map_or(true, |old| old != new_funding_rate);
         let rate_24h_changed = self.btc_funding_rate_24h.map_or(true, |old| old != new_funding_rate_24h);
-        let changed = rate_changed || rate_24h_changed;
+        let twap_changed = self.btc_oracle_twap.map_or(true, |old| old != new_oracle_twap);
+        let changed = rate_changed || rate_24h_changed || twap_changed;
 
         if changed {
-            display::print_funding_rate_update("BTC-PERP", new_funding_rate, new_funding_rate_24h);
+            display::print_funding_rate_update("BTC-PERP", new_funding_rate, new_funding_rate_24h, new_oracle_twap);
             self.btc_funding_rate = Some(new_funding_rate);
             self.btc_funding_rate_24h = Some(new_funding_rate_24h);
+            self.btc_oracle_twap = Some(new_oracle_twap);
+        }
+
+        changed
+    }
+
+    fn update_sol_funding_rate(&mut self, new_funding_rate: i64, new_funding_rate_24h: i64, new_oracle_twap: i64) -> bool {
+        let rate_changed = self.sol_funding_rate.map_or(true, |old| old != new_funding_rate);
+        let rate_24h_changed = self.sol_funding_rate_24h.map_or(true, |old| old != new_funding_rate_24h);
+        let twap_changed = self.sol_oracle_twap.map_or(true, |old| old != new_oracle_twap);
+        let changed = rate_changed || rate_24h_changed || twap_changed;
+
+        if changed {
+            display::print_funding_rate_update("SOL-PERP", new_funding_rate, new_funding_rate_24h, new_oracle_twap);
+            self.sol_funding_rate = Some(new_funding_rate);
+            self.sol_funding_rate_24h = Some(new_funding_rate_24h);
+            self.sol_oracle_twap = Some(new_oracle_twap);
+        }
+
+        changed
+    }
+
+    fn update_eth_funding_rate(&mut self, new_funding_rate: i64, new_funding_rate_24h: i64, new_oracle_twap: i64) -> bool {
+        let rate_changed = self.eth_funding_rate.map_or(true, |old| old != new_funding_rate);
+        let rate_24h_changed = self.eth_funding_rate_24h.map_or(true, |old| old != new_funding_rate_24h);
+        let twap_changed = self.eth_oracle_twap.map_or(true, |old| old != new_oracle_twap);
+        let changed = rate_changed || rate_24h_changed || twap_changed;
+
+        if changed {
+            display::print_funding_rate_update("ETH-PERP", new_funding_rate, new_funding_rate_24h, new_oracle_twap);
+            self.eth_funding_rate = Some(new_funding_rate);
+            self.eth_funding_rate_24h = Some(new_funding_rate_24h);
+            self.eth_oracle_twap = Some(new_oracle_twap);
         }
 
         changed
@@ -186,6 +227,14 @@ async fn start_monitoring_inner(
         .market_lookup("btc-perp")
         .ok_or("BTC-PERP market not found")?;
 
+    let sol_perp_market_id = drift
+        .market_lookup("sol-perp")
+        .ok_or("SOL-PERP market not found")?;
+
+    let eth_perp_market_id = drift
+        .market_lookup("eth-perp")
+        .ok_or("ETH-PERP market not found")?;
+
     let usdc_spot_market_id = drift
         .market_lookup("usdc")
         .unwrap_or_else(|| MarketId::spot(0)); // Fallback to index 0
@@ -197,8 +246,10 @@ async fn start_monitoring_inner(
         .unwrap_or_else(|| MarketId::spot(7)); // JLP is usually market index 7
 
     display::print_info(&format!(
-        "Monitoring BTC-PERP (market {}), USDC spot (market {}), JLP spot (market {})",
+        "Monitoring BTC-PERP (market {}), SOL-PERP (market {}), ETH-PERP (market {}), USDC spot (market {}), JLP spot (market {})",
         btc_perp_market_id.index(),
+        sol_perp_market_id.index(),
+        eth_perp_market_id.index(),
         usdc_spot_market_id.index(),
         jlp_spot_market_id.index()
     ));
@@ -243,9 +294,9 @@ async fn start_monitoring_inner(
         }
     }
 
-    // Subscribe to oracle updates for BTC market
-    match drift.subscribe_oracles(&[btc_perp_market_id]).await {
-        Ok(_) => display::print_success("Subscribed to BTC oracle updates"),
+    // Subscribe to oracle updates for BTC, SOL and ETH markets
+    match drift.subscribe_oracles(&[btc_perp_market_id, sol_perp_market_id, eth_perp_market_id]).await {
+        Ok(_) => display::print_success("Subscribed to BTC, SOL and ETH oracle updates"),
         Err(e) => {
             // AlreadySubscribed is fine - it means gRPC already handles it
             if !format!("{:?}", e).contains("AlreadySubscribed") {
@@ -388,6 +439,13 @@ async fn start_monitoring_inner(
                     state.btc_position_pnl,
                     state.btc_funding_rate,
                     state.btc_funding_rate_24h,
+                    state.btc_oracle_twap,
+                    state.sol_funding_rate,
+                    state.sol_funding_rate_24h,
+                    state.sol_oracle_twap,
+                    state.eth_funding_rate,
+                    state.eth_funding_rate_24h,
+                    state.eth_oracle_twap,
                 );
             }
             _ = update_timer.tick() => {
@@ -404,7 +462,34 @@ async fn start_monitoring_inner(
                     Ok(perp_market) => {
                         let funding_rate = perp_market.amm.last_funding_rate;
                         let funding_rate_24h = perp_market.amm.last24h_avg_funding_rate;
-                        state.update_btc_funding_rate(funding_rate, funding_rate_24h);
+                        let oracle_twap = perp_market.amm.last_funding_oracle_twap;
+                        state.update_btc_funding_rate(funding_rate, funding_rate_24h, oracle_twap);
+                    }
+                    Err(_) => {
+                        // Perp market data not available, this is fine
+                    }
+                }
+
+                // Check SOL-PERP funding rate
+                match drift.try_get_perp_market_account(sol_perp_market_id.index()) {
+                    Ok(perp_market) => {
+                        let funding_rate = perp_market.amm.last_funding_rate;
+                        let funding_rate_24h = perp_market.amm.last24h_avg_funding_rate;
+                        let oracle_twap = perp_market.amm.last_funding_oracle_twap;
+                        state.update_sol_funding_rate(funding_rate, funding_rate_24h, oracle_twap);
+                    }
+                    Err(_) => {
+                        // Perp market data not available, this is fine
+                    }
+                }
+
+                // Check ETH-PERP funding rate
+                match drift.try_get_perp_market_account(eth_perp_market_id.index()) {
+                    Ok(perp_market) => {
+                        let funding_rate = perp_market.amm.last_funding_rate;
+                        let funding_rate_24h = perp_market.amm.last24h_avg_funding_rate;
+                        let oracle_twap = perp_market.amm.last_funding_oracle_twap;
+                        state.update_eth_funding_rate(funding_rate, funding_rate_24h, oracle_twap);
                     }
                     Err(_) => {
                         // Perp market data not available, this is fine

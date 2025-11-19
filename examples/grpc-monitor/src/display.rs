@@ -131,6 +131,13 @@ pub fn print_status_summary(
     btc_position_pnl: Option<i128>,
     btc_funding_rate: Option<i64>,
     btc_funding_rate_24h: Option<i64>,
+    btc_oracle_twap: Option<i64>,
+    sol_funding_rate: Option<i64>,
+    sol_funding_rate_24h: Option<i64>,
+    sol_oracle_twap: Option<i64>,
+    eth_funding_rate: Option<i64>,
+    eth_funding_rate_24h: Option<i64>,
+    eth_oracle_twap: Option<i64>,
 ) {
     print_divider();
     println!("{}", "📋 Current Status".bright_white().bold());
@@ -163,10 +170,11 @@ pub fn print_status_summary(
         println!("  BTC Position: {}", "No position data".bright_black());
     }
 
-    if let (Some(funding_rate), Some(funding_rate_24h)) = (btc_funding_rate, btc_funding_rate_24h) {
-        let funding_rate_precision = 1_000_000_000_000.0; // 1e12
-        let rate_pct = funding_rate as f64 / funding_rate_precision;
-        let rate_24h_pct = funding_rate_24h as f64 / funding_rate_precision;
+    if let (Some(funding_rate), Some(funding_rate_24h), Some(oracle_twap)) = (btc_funding_rate, btc_funding_rate_24h, btc_oracle_twap) {
+        // Formula: (last_funding_rate / last_funding_oracle_twap) / FUNDING_RATE_BUFFER * 100 (for percentage)
+        // FUNDING_RATE_BUFFER = 1000, so: / 1000 * 100 = / 10
+        let rate_pct = funding_rate as f64 / oracle_twap as f64 / 10.0;
+        let rate_24h_pct = funding_rate_24h as f64 / oracle_twap as f64 / 10.0;
 
         let rate_str = if rate_pct > 0.0 {
             format!("{:+.6}%", rate_pct).bright_green()
@@ -189,6 +197,60 @@ pub fn print_status_summary(
         println!("  BTC Funding Rate: {}", "No funding rate data".bright_black());
     }
 
+    if let (Some(funding_rate), Some(funding_rate_24h), Some(oracle_twap)) = (sol_funding_rate, sol_funding_rate_24h, sol_oracle_twap) {
+        // Formula: (last_funding_rate / last_funding_oracle_twap) / FUNDING_RATE_BUFFER * 100 (for percentage)
+        // FUNDING_RATE_BUFFER = 1000, so: / 1000 * 100 = / 10
+        let rate_pct = funding_rate as f64 / oracle_twap as f64 / 10.0;
+        let rate_24h_pct = funding_rate_24h as f64 / oracle_twap as f64 / 10.0;
+
+        let rate_str = if rate_pct > 0.0 {
+            format!("{:+.6}%", rate_pct).bright_green()
+        } else if rate_pct < 0.0 {
+            format!("{:+.6}%", rate_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_pct).white()
+        };
+
+        let rate_24h_str = if rate_24h_pct > 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_green()
+        } else if rate_24h_pct < 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_24h_pct).white()
+        };
+
+        println!("  SOL Funding Rate: {} (24h avg: {})", rate_str, rate_24h_str);
+    } else {
+        println!("  SOL Funding Rate: {}", "No funding rate data".bright_black());
+    }
+
+    if let (Some(funding_rate), Some(funding_rate_24h), Some(oracle_twap)) = (eth_funding_rate, eth_funding_rate_24h, eth_oracle_twap) {
+        // Formula: (last_funding_rate / last_funding_oracle_twap) / FUNDING_RATE_BUFFER * 100 (for percentage)
+        // FUNDING_RATE_BUFFER = 1000, so: / 1000 * 100 = / 10
+        let rate_pct = funding_rate as f64 / oracle_twap as f64 / 10.0;
+        let rate_24h_pct = funding_rate_24h as f64 / oracle_twap as f64 / 10.0;
+
+        let rate_str = if rate_pct > 0.0 {
+            format!("{:+.6}%", rate_pct).bright_green()
+        } else if rate_pct < 0.0 {
+            format!("{:+.6}%", rate_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_pct).white()
+        };
+
+        let rate_24h_str = if rate_24h_pct > 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_green()
+        } else if rate_24h_pct < 0.0 {
+            format!("{:+.6}%", rate_24h_pct).bright_red()
+        } else {
+            format!("{:+.6}%", rate_24h_pct).white()
+        };
+
+        println!("  ETH Funding Rate: {} (24h avg: {})", rate_str, rate_24h_str);
+    } else {
+        println!("  ETH Funding Rate: {}", "No funding rate data".bright_black());
+    }
+
     print_divider();
 }
 
@@ -203,15 +265,13 @@ pub fn print_success(message: &str) {
 }
 
 /// Print funding rate update notification
-pub fn print_funding_rate_update(market: &str, funding_rate: i64, funding_rate_24h: i64) {
+pub fn print_funding_rate_update(market: &str, funding_rate: i64, funding_rate_24h: i64, oracle_twap: i64) {
     let timestamp = current_timestamp();
 
-    // Convert funding rate from i64 to percentage
-    // Based on analysis: chain-stored funding rates use 1e12 precision
-    // (FUNDING_RATE_PRECISION * FUNDING_RATE_BUFFER = 1e9 * 1e3 = 1e12)
-    let funding_rate_precision = 1_000_000_000_000.0; // 1e12
-    let rate_pct = funding_rate as f64 / funding_rate_precision;
-    let rate_24h_pct = funding_rate_24h as f64 / funding_rate_precision;
+    // Formula: (last_funding_rate / last_funding_oracle_twap) / FUNDING_RATE_BUFFER * 100 (for percentage)
+    // FUNDING_RATE_BUFFER = 1000, so: / 1000 * 100 = / 10
+    let rate_pct = funding_rate as f64 / oracle_twap as f64 / 10.0;
+    let rate_24h_pct = funding_rate_24h as f64 / oracle_twap as f64 / 10.0;
 
     let rate_str = if rate_pct > 0.0 {
         format!("{:+.6}%", rate_pct).bright_green()

@@ -8,7 +8,7 @@ use drift_rs::{
     math::constants::{BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PRICE_PRECISION_U64},
     types::{accounts::User, Context, MarketId, NewOrder, PostOnlyParam, SettlePnlMode},
     utils::test_envs::{devnet_endpoint, mainnet_endpoint, test_keypair},
-    DriftClient, GrpcSubscribeOpts, Pubkey, TransactionBuilder, Wallet,
+    DriftClient, GrpcSubscribeOpts, Pubkey, Wallet,
 };
 use futures_util::StreamExt;
 use solana_sdk::{clock::Slot, signature::Keypair};
@@ -185,16 +185,11 @@ async fn place_and_cancel_orders() {
     .await
     .expect("connects");
 
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    // let user: User = client
+    //     .get_user_account(&wallet.default_sub_account())
+    //     .await
+    //     .expect("exists");
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .cancel_all_orders()
     .place_orders(vec![
         NewOrder::limit(btc_perp)

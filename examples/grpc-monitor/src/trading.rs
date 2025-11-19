@@ -3,7 +3,6 @@ use std::time::Duration;
 use drift_rs::{
     DriftClient,
     Wallet,
-    TransactionBuilder,
     types::{
         accounts::User,
         MarketId,
@@ -83,12 +82,7 @@ pub async fn buy_jlp_via_jupiter(
 
     // Build transaction
     display::print_info("🔨 Building swap transaction...");
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
+    let tx = client.init_tx(&wallet.default_sub_account(), false).await.unwrap()
     .jupiter_swap(
         jupiter_swap_info,
         &in_market,

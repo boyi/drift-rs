@@ -3705,7 +3705,7 @@ mod tests {
         // Create a test user with high leverage mode
         let mut user = User::default();
         user.margin_mode = MarginMode::HighLeverage;
-        let user = Cow::Owned(user);
+        let user: Cow<User> = Cow::Owned(user);
 
         // Create program data
         let program_data = ProgramData::new(
