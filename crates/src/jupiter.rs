@@ -108,7 +108,7 @@ impl JupiterSwapApi for DriftClient {
             only_direct_routes,
             excluded_dexes,
             restrict_intermediate_tokens: Some(true),
-            max_accounts: Some(64),
+            max_accounts: Some(48),
             ..Default::default()
         };
 
