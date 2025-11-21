@@ -173,7 +173,7 @@ fn generate_idl_types(idl: &Idl) -> String {
         );
         let type_tokens = match &type_def.type_def {
             TypeData::Enum { variants } => {
-                let has_complex_variant = variants.iter().any(|v| match v {
+                let has_complex_first_variant = variants.iter().next().is_some_and(|v| match v {
                     EnumVariant::Complex { .. } => true,
                     _ => false,
                 });
@@ -209,15 +209,24 @@ fn generate_idl_types(idl: &Idl) -> String {
                                         #field_name: #field_type,
                                     }
                                 });
-                                quote! {
-                                    #variant_name {
-                                        #(#field_tokens)*
-                                    },
+                                if i == 0 && !has_complex_first_variant {
+                                    quote! {
+                                        #[default]
+                                        #variant_name {
+                                            #(#field_tokens)*
+                                        },
+                                    }
+                                } else {
+                                    quote! {
+                                        #variant_name {
+                                            #(#field_tokens)*
+                                        },
+                                    }
                                 }
                             }
                         });
 
-                if has_complex_variant {
+                if has_complex_first_variant {
                     quote! {
                         #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
                         pub enum #type_name {
@@ -240,9 +249,22 @@ fn generate_idl_types(idl: &Idl) -> String {
                 let struct_fields = fields.iter().map(|field| {
                     let field_name =
                         Ident::new(&to_snake_case(&field.name), proc_macro2::Span::call_site());
-                    let field_type: syn::Type =
+                    let mut field_type: syn::Type =
                         syn::parse_str(&field.field_type.to_rust_type()).unwrap();
+
+                    let mut serde_decorator = TokenStream::default();
+                    // workaround for padding types preventing outertype from deriving 'Default'
+                    if field_name.to_string().starts_with("padding") {
+                        if let ArgType::Array { array: (_t, len) } = &field.field_type {
+                            field_type = syn::parse_str(&format!("Padding<{len}>")).unwrap();
+                            serde_decorator = quote! {
+                                #[serde(skip)]
+                            };
+                        }
+                    }
+
                     quote! {
+                        #serde_decorator
                         pub #field_name: #field_type,
                     }
                 });
@@ -282,7 +304,7 @@ fn generate_idl_types(idl: &Idl) -> String {
                 let mut field_type: Type =
                     syn::parse_str(&field.field_type.to_rust_type()).unwrap();
                 // workaround for padding types preventing outertype from deriving 'Default'
-                if field_name == "padding" {
+                if field_name.to_string().starts_with("padding") {
                     if let ArgType::Array { array: (_t, len) } = &field.field_type {
                         field_type = syn::parse_str(&format!("Padding<{len}>")).unwrap();
                         serde_decorator = quote! {

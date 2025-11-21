@@ -7,11 +7,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "titan")]
+use crate::titan::TitanSwapInfo;
 use crate::{
     account_map::AccountMap,
     blockhash_subscriber::BlockhashSubscriber,
     constants::{
-        derive_perp_market_account, derive_spot_market_account,
+        derive_perp_market_account, derive_revenue_share_escrow, derive_spot_market_account,
         ids::{drift_oracle_receiver_program, wormhole_program},
         state_account, MarketExt, ProgramData, DEFAULT_PUBKEY, PYTH_LAZER_STORAGE_ACCOUNT_KEY,
         SYSVAR_INSTRUCTIONS_PUBKEY, SYSVAR_RENT_PUBKEY,
@@ -63,6 +65,9 @@ pub use solana_sdk::{address_lookup_table::AddressLookupTableAccount, pubkey::Pu
 pub mod async_utils;
 pub mod ffi;
 pub mod jupiter;
+pub mod market_state;
+pub mod titan;
+pub use market_state::MarketState;
 pub mod math;
 pub mod memcmp;
 pub mod utils;
@@ -324,23 +329,30 @@ impl DriftClient {
     /// Subscribe to swift order feed(s) for given `markets`
     ///
     /// * `markets` - list of markets to watch for swift orders
-    /// * `accept_sanitized` - set to `Some(true)` to also view *sanitized order flow
+    /// * `accept_sanitized` - set to `Some(true)` to view *sanitized order flow
+    /// * `accept_deposit_trades` - set to `Some(true)` to view 'deposit+trade' order flow
     /// * `swift_ws_url` - optional custom swift Ws endpoint
     ///
-    /// *a sanitized order may have its auction params modified by the program when
-    /// placed onchain. Makers should understand the time/price implications to accept these.
+    /// ## DEV
+    /// - *a sanitized order may have its auction params modified by the program when
+    ///   placed onchain. Makers should understand the time/price implications to accept these.
+    ///
+    /// - 'deposit+trade' orders require fillers to send an attached, preceding deposit tx
+    ///   before the swift order
     ///
     /// Returns a stream of swift orders
     pub async fn subscribe_swift_orders(
         &self,
         markets: &[MarketId],
         accept_sanitized: Option<bool>,
+        accept_deposit_trades: Option<bool>,
         swift_ws_url: Option<String>,
     ) -> SdkResult<SwiftOrderStream> {
         swift_order_subscriber::subscribe_swift_orders(
             self,
             markets,
             accept_sanitized.is_some_and(|x| x),
+            accept_deposit_trades.is_some_and(|x| x),
             swift_ws_url,
         )
         .await
@@ -878,7 +890,7 @@ impl DriftClient {
         &self,
         account: &Pubkey,
         delegated: bool,
-    ) -> SdkResult<TransactionBuilder> {
+    ) -> SdkResult<TransactionBuilder<'_>> {
         let account_data = self.get_user_account(account).await?;
         Ok(TransactionBuilder::new(
             self.program_data(),
@@ -1771,6 +1783,33 @@ pub struct TransactionBuilder<'a> {
     legacy: bool,
 }
 
+/// Jupiter swap instructions prepared for insertion into a transaction
+pub struct JupiterSwapInstructions {
+    /// Account creation instructions (if needed)
+    pub account_creation_instructions: Vec<Instruction>,
+    /// The amount being swapped in (for begin wrapper)
+    pub in_amount: u64,
+    /// The main Jupiter swap instruction
+    pub swap_instruction: Instruction,
+    /// Optional cleanup instruction (e.g., SOL unwrap)
+    pub cleanup_instruction: Option<Instruction>,
+    /// Lookup tables for the transaction
+    pub luts: Vec<AddressLookupTableAccount>,
+}
+
+#[cfg(feature = "titan")]
+/// Titan swap instructions prepared for insertion into a transaction
+pub struct TitanSwapInstructions {
+    /// Account creation instructions (if needed)
+    pub account_creation_instructions: Vec<Instruction>,
+    /// The amount being swapped in (for begin wrapper)
+    pub in_amount: u64,
+    /// All Titan swap instructions
+    pub swap_instructions: Vec<Instruction>,
+    /// Lookup tables for the transaction
+    pub luts: Vec<AddressLookupTableAccount>,
+}
+
 impl<'a> TransactionBuilder<'a> {
     /// Initialize a new `TransactionBuilder` for default signer
     ///
@@ -2454,6 +2493,13 @@ impl<'a> TransactionBuilder<'a> {
             ));
         }
 
+        if signed_order_info.has_builder() {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&taker_account.authority),
+                false,
+            ));
+        }
+
         self.ixs.push(Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
@@ -2514,6 +2560,13 @@ impl<'a> TransactionBuilder<'a> {
                 .is_high_leverage_mode(MarginRequirementType::Maintenance)
         {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
+        }
+
+        if signed_order_info.has_builder() {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&taker_account.authority),
+                false,
+            ));
         }
 
         let swift_taker_ix_data = signed_order_info.to_ix_data();
@@ -2700,6 +2753,89 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Helper function that creates token account creation instructions
+    fn create_token_account_instructions(
+        authority: &Pubkey,
+        token_account: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+    ) -> Instruction {
+        Instruction {
+            program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(*authority, true), // payer
+                AccountMeta::new(*token_account, false),
+                AccountMeta::new_readonly(*authority, false), // wallet
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+                AccountMeta::new_readonly(*token_program, false),
+            ],
+            data: vec![1], // idempotent mode
+        }
+    }
+
+    /// Prepares Jupiter swap instructions for insertion into a transaction
+    ///
+    /// This function handles common Jupiter-specific logic and returns a struct containing
+    /// all the instructions that need to be inserted between begin and end wrapper instructions.
+    ///
+    /// # Arguments
+    /// * `jupiter_swap_info` - Jupiter swap route and instructions
+    /// * `in_market` - Spot market of the input token
+    /// * `out_market` - Spot market of the output token
+    /// * `in_token_account` - Input token account pubkey
+    /// * `out_token_account` - Output token account pubkey
+    pub fn build_jupiter_swap_ixs(
+        authority: &Pubkey,
+        jupiter_swap_info: JupiterSwapInfo,
+        in_market: &SpotMarket,
+        out_market: &SpotMarket,
+        in_token_account: &Pubkey,
+        out_token_account: &Pubkey,
+    ) -> JupiterSwapInstructions {
+        let jupiter_swap_ixs = jupiter_swap_info.ixs;
+
+        // initialize token accounts
+        let account_creation_instructions = if !jupiter_swap_ixs.setup_instructions.is_empty() {
+            // jupiter swap ixs imply account creation is required
+            // provide our own creation ixs
+            vec![
+                Self::create_token_account_instructions(
+                    authority,
+                    in_token_account,
+                    &in_market.mint,
+                    &in_market.token_program(),
+                ),
+                Self::create_token_account_instructions(
+                    authority,
+                    out_token_account,
+                    &out_market.mint,
+                    &out_market.token_program(),
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+
+        // TODO: support jito bundle
+        if !jupiter_swap_ixs.other_instructions.is_empty() {
+            panic!("jupiter swap unsupported ix: Jito tip");
+        }
+
+        // support SOL unwrap ixs, ignore account delete/reclaim ixs
+        let cleanup_instruction = jupiter_swap_ixs.cleanup_instruction.filter(|ix| {
+            ix.program_id != TOKEN_PROGRAM_ID && ix.program_id != TOKEN_2022_PROGRAM_ID
+        });
+
+        JupiterSwapInstructions {
+            account_creation_instructions,
+            in_amount: jupiter_swap_info.quote.in_amount,
+            swap_instruction: jupiter_swap_ixs.swap_instruction,
+            cleanup_instruction,
+            luts: jupiter_swap_info.luts,
+        }
+    }
+
     /// Add a Jupiter token swap to the tx
     ///
     /// # Arguments
@@ -2720,66 +2856,34 @@ impl<'a> TransactionBuilder<'a> {
         limit_price: Option<u64>,
         reduce_only: Option<SwapReduceOnly>,
     ) -> Self {
-        let jupiter_swap_ixs = jupiter_swap_info.ixs;
-
-        // initialize token accounts
-        if !jupiter_swap_ixs.setup_instructions.is_empty() {
-            // jupiter swap ixs imply account creation is required
-            // provide our own creation ixs
-            // new_self.ixs.extend(jupiter_swap_ixs.setup_instructions);
-            let create_in_account_ix = Instruction {
-                program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
-                accounts: vec![
-                    AccountMeta::new(self.authority, true), // payer
-                    AccountMeta::new(*in_token_account, false),
-                    AccountMeta::new_readonly(self.authority, false), // wallet
-                    AccountMeta::new_readonly(in_market.mint, false),
-                    AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
-                    AccountMeta::new_readonly(in_market.token_program(), false),
-                ],
-                data: vec![1], // idempotent mode
-            };
-            let create_out_account_ix = Instruction {
-                program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
-                accounts: vec![
-                    AccountMeta::new(self.authority, true), // payer
-                    AccountMeta::new(*out_token_account, false),
-                    AccountMeta::new_readonly(self.authority, false), // wallet
-                    AccountMeta::new_readonly(out_market.mint, false),
-                    AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
-                    AccountMeta::new_readonly(out_market.token_program(), false),
-                ],
-                data: vec![1], // idempotent mode
-            };
-            self.ixs
-                .extend_from_slice(&[create_in_account_ix, create_out_account_ix]);
-        }
-
-        let mut new_self = self.begin_swap(
-            jupiter_swap_info.quote.in_amount,
+        let JupiterSwapInstructions {
+            account_creation_instructions,
+            in_amount,
+            swap_instruction,
+            cleanup_instruction,
+            luts,
+        } = Self::build_jupiter_swap_ixs(
+            &self.authority,
+            jupiter_swap_info,
             in_market,
             out_market,
             in_token_account,
             out_token_account,
         );
+        self.ixs.extend(account_creation_instructions);
 
-        // TODO: support jito bundle
-        if !jupiter_swap_ixs.other_instructions.is_empty() {
-            panic!("jupiter swap unsupported ix: Jito tip");
+        self = self.begin_swap(
+            in_amount,
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+        );
+        self.ixs.push(swap_instruction);
+        if let Some(cleanup_ix) = cleanup_instruction {
+            self.ixs.push(cleanup_ix);
         }
-
-        new_self.ixs.push(jupiter_swap_ixs.swap_instruction);
-
-        // support SOL unwrap ixs, ignore account delete/reclaim ixs
-        if let Some(unwrap_ix) = jupiter_swap_ixs.cleanup_instruction {
-            if unwrap_ix.program_id != TOKEN_PROGRAM_ID
-                && unwrap_ix.program_id != TOKEN_2022_PROGRAM_ID
-            {
-                new_self.ixs.push(unwrap_ix);
-            }
-        }
-
-        new_self = new_self.end_swap(
+        self = self.end_swap(
             in_market,
             out_market,
             in_token_account,
@@ -2787,9 +2891,230 @@ impl<'a> TransactionBuilder<'a> {
             limit_price,
             reduce_only,
         );
+        self.lookup_tables(&luts)
+    }
 
-        // Add the jup tx LUTs
-        new_self.lookup_tables(&jupiter_swap_info.luts)
+    /// Add a Jupiter token swap to the tx for liquidation
+    ///
+    /// This wraps the Jupiter swap with `liquidate_spot_with_swap_begin` and `liquidate_spot_with_swap_end`
+    ///
+    /// # Arguments
+    /// * `jupiter_swap_info` - Jupiter swap route and instructions
+    /// * `in_market` - Spot market of the input token (liability market)
+    /// * `out_market` - Spot market of the output token (asset market)
+    /// * `in_token_account` - Input token account pubkey (for account creation if needed)
+    /// * `out_token_account` - Output token account pubkey (for account creation if needed)
+    /// * `asset_market_index` - Market index of the asset (collateral)
+    /// * `liability_market_index` - Market index of the liability (borrow)
+    /// * `user_account` - The user account being liquidated
+    pub fn jupiter_swap_liquidate(
+        mut self,
+        jupiter_swap_info: JupiterSwapInfo,
+        in_market: &SpotMarket,
+        out_market: &SpotMarket,
+        in_token_account: &Pubkey,
+        out_token_account: &Pubkey,
+        asset_market_index: u16,
+        liability_market_index: u16,
+        user_account: &User,
+    ) -> Self {
+        let JupiterSwapInstructions {
+            account_creation_instructions,
+            in_amount,
+            swap_instruction,
+            cleanup_instruction,
+            luts,
+        } = Self::build_jupiter_swap_ixs(
+            &self.authority,
+            jupiter_swap_info,
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+        );
+        self.ixs.extend(account_creation_instructions);
+        self = self.liquidate_spot_with_swap_begin(
+            asset_market_index,
+            liability_market_index,
+            in_amount,
+            user_account,
+        );
+        self.ixs.push(swap_instruction);
+        if let Some(cleanup_ix) = cleanup_instruction {
+            self.ixs.push(cleanup_ix);
+        }
+        self = self.liquidate_spot_with_swap_end(
+            asset_market_index,
+            liability_market_index,
+            user_account,
+        );
+
+        self.lookup_tables(&luts)
+    }
+
+    #[cfg(feature = "titan")]
+    /// Prepares Titan swap instructions for insertion into a transaction
+    ///
+    /// This function handles common Titan-specific logic and returns a struct containing
+    /// all the instructions that need to be inserted between begin and end wrapper instructions.
+    ///
+    /// # Arguments
+    /// * `titan_swap_info` - Titan swap route and instructions
+    /// * `in_market` - Spot market of the input token
+    /// * `out_market` - Spot market of the output token
+    /// * `in_token_account` - Input token account pubkey
+    /// * `out_token_account` - Output token account pubkey
+    pub fn build_titan_swap_ixs(
+        authority: &Pubkey,
+        titan_swap_info: TitanSwapInfo,
+        in_market: &SpotMarket,
+        out_market: &SpotMarket,
+        in_token_account: &Pubkey,
+        out_token_account: &Pubkey,
+    ) -> TitanSwapInstructions {
+        let swap_response = titan_swap_info.ixs;
+
+        let account_creation_instructions = vec![
+            Self::create_token_account_instructions(
+                authority,
+                in_token_account,
+                &in_market.mint,
+                &in_market.token_program(),
+            ),
+            Self::create_token_account_instructions(
+                authority,
+                out_token_account,
+                &out_market.mint,
+                &out_market.token_program(),
+            ),
+        ];
+
+        let swap_instructions: Vec<Instruction> = swap_response
+            .instructions
+            .into_iter()
+            .filter(|ix| {
+                ix.program_id != TOKEN_PROGRAM_ID
+                    && ix.program_id != TOKEN_2022_PROGRAM_ID
+                    && ix.program_id != ASSOCIATED_TOKEN_PROGRAM_ID
+            })
+            .collect();
+
+        TitanSwapInstructions {
+            account_creation_instructions,
+            in_amount: titan_swap_info.quote.in_amount,
+            swap_instructions,
+            luts: titan_swap_info.luts,
+        }
+    }
+
+    #[cfg(feature = "titan")]
+    /// Add a Titan token swap to the tx
+    ///
+    /// # Arguments
+    /// * `titan_swap_info` - Titan swap route and instructions
+    /// * `in_market` - Spot market of the input token
+    /// * `out_market` - Spot market of the output token
+    /// * `in_token_account` - Input token account pubkey
+    /// * `out_token_account` - Output token account pubkey
+    /// * `limit_price` - Set a limit price
+    /// * `reduce_only` - Set a reduce only order
+    pub fn titan_swap(
+        mut self,
+        titan_swap_info: TitanSwapInfo,
+        in_market: &SpotMarket,
+        out_market: &SpotMarket,
+        in_token_account: &Pubkey,
+        out_token_account: &Pubkey,
+        limit_price: Option<u64>,
+        reduce_only: Option<SwapReduceOnly>,
+    ) -> Self {
+        let TitanSwapInstructions {
+            account_creation_instructions,
+            in_amount,
+            swap_instructions,
+            luts,
+        } = Self::build_titan_swap_ixs(
+            &self.authority,
+            titan_swap_info,
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+        );
+        self.ixs.extend(account_creation_instructions);
+
+        self = self.begin_swap(
+            in_amount,
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+        );
+        self.ixs.extend(swap_instructions);
+        self = self.end_swap(
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+            limit_price,
+            reduce_only,
+        );
+        self.lookup_tables(&luts)
+    }
+
+    #[cfg(feature = "titan")]
+    /// Add a Titan token swap to the tx for liquidation
+    ///
+    /// This wraps the Titan swap with `liquidate_spot_with_swap_begin` and `liquidate_spot_with_swap_end`
+    ///
+    /// # Arguments
+    /// * `titan_swap_info` - Titan swap route and instructions
+    /// * `in_market` - Spot market of the input token (liability market)
+    /// * `out_market` - Spot market of the output token (asset market)
+    /// * `in_token_account` - Input token account pubkey (for account creation if needed)
+    /// * `out_token_account` - Output token account pubkey (for account creation if needed)
+    /// * `asset_market_index` - Market index of the asset (collateral)
+    /// * `liability_market_index` - Market index of the liability (borrow)
+    /// * `user_account` - The user account being liquidated
+    pub fn titan_swap_liquidate(
+        mut self,
+        jupiter_swap_info: TitanSwapInfo,
+        in_market: &SpotMarket,
+        out_market: &SpotMarket,
+        in_token_account: &Pubkey,
+        out_token_account: &Pubkey,
+        asset_market_index: u16,
+        liability_market_index: u16,
+        user_account: &User,
+    ) -> Self {
+        let TitanSwapInstructions {
+            account_creation_instructions,
+            in_amount,
+            swap_instructions,
+            luts,
+        } = Self::build_titan_swap_ixs(
+            &self.authority,
+            jupiter_swap_info,
+            in_market,
+            out_market,
+            in_token_account,
+            out_token_account,
+        );
+        self.ixs.extend(account_creation_instructions);
+        self = self.liquidate_spot_with_swap_begin(
+            asset_market_index,
+            liability_market_index,
+            in_amount,
+            user_account,
+        );
+        self.ixs.extend(swap_instructions);
+        self = self.liquidate_spot_with_swap_end(
+            asset_market_index,
+            liability_market_index,
+            user_account,
+        );
+
+        self.lookup_tables(&luts)
     }
 
     /// Settle perp PnL for some user account and market
@@ -2804,7 +3129,7 @@ impl<'a> TransactionBuilder<'a> {
         target_pubkey: Option<&Pubkey>,
         target_account: Option<&User>,
     ) -> Self {
-        let accounts = build_accounts(
+        let mut accounts = build_accounts(
             self.program_data,
             self.perp_market_map,
             self.spot_market_map,
@@ -2822,6 +3147,14 @@ impl<'a> TransactionBuilder<'a> {
             std::iter::empty(),
             [MarketId::QUOTE_SPOT, MarketId::perp(market_index)].iter(),
         );
+
+        let target_user = target_account.unwrap_or(&self.account_data);
+        if target_user.orders.iter().any(|o| o.has_builder()) {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&target_user.authority),
+                false,
+            ));
+        }
 
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
@@ -2849,7 +3182,7 @@ impl<'a> TransactionBuilder<'a> {
         target_account: Option<&User>,
     ) -> Self {
         let perp_iter: Vec<MarketId> = markets.iter().map(|i| MarketId::perp(*i)).collect();
-        let accounts = build_accounts(
+        let mut accounts = build_accounts(
             self.program_data,
             self.perp_market_map,
             self.spot_market_map,
@@ -2869,6 +3202,14 @@ impl<'a> TransactionBuilder<'a> {
                 .iter()
                 .chain(std::iter::once(&MarketId::QUOTE_SPOT)),
         );
+
+        let target_user = target_account.unwrap_or(&self.account_data);
+        if target_user.orders.iter().any(|o| o.has_builder()) {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&target_user.authority),
+                false,
+            ));
+        }
 
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
@@ -2896,6 +3237,10 @@ impl<'a> TransactionBuilder<'a> {
     /// * `taker_stats` - the taker's user stats account data
     /// * `taker_order_id` - optional order ID to fill, if None fills the best available order
     /// * `makers` - list of maker user accounts that will provide liquidity
+    /// * `has_builder` - if true include RevenueShareEscrow account for the taker, otherwise
+    ///   try to infer from the taker's orders. This exists because the caller may have additional
+    ///   information about the builder status of the order, such as from decoding the Swift message.
+    ///   Worst case it will include the RevenueShareEscrow account optimistically.
     pub fn fill_perp_order(
         mut self,
         market_index: u16,
@@ -2904,6 +3249,7 @@ impl<'a> TransactionBuilder<'a> {
         taker_stats: &UserStats,
         taker_order_id: Option<u32>,
         makers: &[User],
+        has_builder: Option<bool>,
     ) -> Self {
         let mut accounts = build_accounts(
             self.program_data,
@@ -2937,6 +3283,25 @@ impl<'a> TransactionBuilder<'a> {
                 AccountMeta::new(Wallet::derive_user_account(&taker_stats.referrer, 0), false),
                 AccountMeta::new(Wallet::derive_stats_account(&taker_stats.referrer), false),
             ]);
+        }
+
+        let add_revenue_share_escrow = if let Some(has) = has_builder {
+            has
+        } else if let Some(order_id) = taker_order_id {
+            taker_account
+                .orders
+                .iter()
+                .find(|o| o.order_id == order_id)
+                .is_none_or(|o| o.has_builder())
+        } else {
+            // no taker_order_id, should be a swift order, include the revenue share escrow optimistically
+            true
+        };
+        if add_revenue_share_escrow {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&taker_account.authority),
+                false,
+            ))
         }
 
         let ix = Instruction {
@@ -3115,6 +3480,218 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Liquidate a spot position for a given user account.
+    ///
+    /// The liquidator will be the subaccount associated with this `TransactionBuilder` (i.e., the builder's default subaccount).
+    ///
+    /// # Parameters
+    /// - `asset_market_index`: The index of the spot market to use as collateral.
+    /// - `liability_market_index`: The market index of liquidatee position.
+    /// - `user_account`: the user account to liquidate (liquidatee)
+    /// - `liquidator_max_liability_transfer`: The maximum base asset amount the liquidator is willing to liquidate.
+    /// - `limit_price`: Optional limit price for the liquidation (if `None`, no limit is set).
+    ///
+    /// # Returns
+    /// Returns an updated `TransactionBuilder` with the liquidation instruction appended.
+    pub fn liquidate_spot(
+        mut self,
+        asset_market_index: u16,
+        liability_market_index: u16,
+        user_account: &User,
+        liquidator_max_liability_transfer: u128,
+        limit_price: Option<u64>,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            types::accounts::LiquidateSpot {
+                state: *state_account(),
+                authority: self.authority,
+                user: Wallet::derive_user_account(
+                    &user_account.authority,
+                    user_account.sub_account_id,
+                ),
+                user_stats: Wallet::derive_stats_account(&user_account.authority),
+                liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
+            },
+            [&self.account_data, user_account].into_iter(),
+            std::iter::empty(),
+            [
+                MarketId::spot(asset_market_index),
+                MarketId::spot(liability_market_index),
+            ]
+            .iter(),
+        );
+
+        let liquidate_ix = Instruction {
+            program_id: PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_idl::instructions::LiquidateSpot {
+                asset_market_index,
+                liability_market_index,
+                liquidator_max_liability_transfer,
+                limit_price,
+            }),
+        };
+
+        self.ixs.push(liquidate_ix);
+        self
+    }
+
+    /// Liquidate a spot position using an external swap (begin phase)
+    ///
+    /// This is the first step of a two phase liquidation that involves swapping collateral.
+    /// Must be followed by an external swap instruction and then liquidate_spot_with_swap_end.
+    ///
+    /// # Parameters
+    /// - `asset_market_index`: The spot market index of the asset (collateral)
+    /// - `liability_market_index`: The spot market index of the liability (borrow)
+    /// - `swap_amount`: The amount to swap
+    /// - `user_account`: The user account being liquidated
+    ///
+    /// # Returns
+    /// Returns the updated `TransactionBuilder` with the instruction appended.
+    pub fn liquidate_spot_with_swap_begin(
+        mut self,
+        asset_market_index: u16,
+        liability_market_index: u16,
+        swap_amount: u64,
+        user_account: &User,
+    ) -> Self {
+        let asset_spot_market = self
+            .program_data
+            .spot_market_config_by_index(asset_market_index)
+            .expect("asset spot market exists");
+        let liability_spot_market = self
+            .program_data
+            .spot_market_config_by_index(liability_market_index)
+            .expect("liability spot market exists");
+
+        let accounts = build_accounts(
+            self.program_data,
+            types::accounts::LiquidateSpotWithSwapBegin {
+                state: *state_account(),
+                authority: self.authority,
+                liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
+                user: Wallet::derive_user_account(
+                    &user_account.authority,
+                    user_account.sub_account_id,
+                ),
+                user_stats: Wallet::derive_stats_account(&user_account.authority),
+                liability_spot_market_vault: liability_spot_market.vault,
+                asset_spot_market_vault: asset_spot_market.vault,
+                liability_token_account: Wallet::derive_associated_token_address(
+                    &self.authority,
+                    liability_spot_market,
+                ),
+                asset_token_account: Wallet::derive_associated_token_address(
+                    &self.authority,
+                    asset_spot_market,
+                ),
+                token_program: liability_spot_market.token_program(),
+                drift_signer: constants::derive_drift_signer(),
+                instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+            },
+            [&self.account_data, user_account].into_iter(),
+            std::iter::empty(),
+            [
+                MarketId::spot(asset_market_index),
+                MarketId::spot(liability_market_index),
+            ]
+            .iter(),
+        );
+
+        let liquidate_ix = Instruction {
+            program_id: PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_idl::instructions::LiquidateSpotWithSwapBegin {
+                asset_market_index,
+                liability_market_index,
+                swap_amount,
+            }),
+        };
+
+        self.ixs.push(liquidate_ix);
+        self
+    }
+
+    /// Liquidate a spot position using an external swap (end phase)
+    ///
+    /// This completes the liquidation after the external swap has been executed.
+    /// Must be preceded by liquidate_spot_with_swap_begin and an external swap instruction.
+    ///
+    ///
+    /// # Parameters
+    /// - `asset_market_index`: The spot market index of the asset (collateral)
+    /// - `liability_market_index`: The spot market index of the liability (borrow)
+    /// - `user_account`: The user account being liquidated
+    ///
+    /// # Returns
+    /// Returns the updated `TransactionBuilder` with the instruction appended.
+    pub fn liquidate_spot_with_swap_end(
+        mut self,
+        asset_market_index: u16,
+        liability_market_index: u16,
+        user_account: &User,
+    ) -> Self {
+        let asset_spot_market = self
+            .program_data
+            .spot_market_config_by_index(asset_market_index)
+            .expect("asset spot market exists");
+        let liability_spot_market = self
+            .program_data
+            .spot_market_config_by_index(liability_market_index)
+            .expect("liability spot market exists");
+
+        let accounts = build_accounts(
+            self.program_data,
+            types::accounts::LiquidateSpotWithSwapEnd {
+                state: *state_account(),
+                authority: self.authority,
+                liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
+                user: Wallet::derive_user_account(
+                    &user_account.authority,
+                    user_account.sub_account_id,
+                ),
+                user_stats: Wallet::derive_stats_account(&user_account.authority),
+                liability_spot_market_vault: liability_spot_market.vault,
+                asset_spot_market_vault: asset_spot_market.vault,
+                liability_token_account: Wallet::derive_associated_token_address(
+                    &self.authority,
+                    liability_spot_market,
+                ),
+                asset_token_account: Wallet::derive_associated_token_address(
+                    &self.authority,
+                    asset_spot_market,
+                ),
+                token_program: liability_spot_market.token_program(),
+                drift_signer: constants::derive_drift_signer(),
+                instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+            },
+            [&self.account_data, user_account].into_iter(),
+            std::iter::empty(),
+            [
+                MarketId::spot(asset_market_index),
+                MarketId::spot(liability_market_index),
+            ]
+            .iter(),
+        );
+
+        let liquidate_ix = Instruction {
+            program_id: PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_idl::instructions::LiquidateSpotWithSwapEnd {
+                asset_market_index,
+                liability_market_index,
+            }),
+        };
+
+        self.ixs.push(liquidate_ix);
+        self
+    }
+
     /// Liquidate a perp position for a given user.
     ///
     /// This method constructs a liquidation instruction for a perpetual market position.
@@ -3162,6 +3739,62 @@ impl<'a> TransactionBuilder<'a> {
                 market_index,
                 liquidator_max_base_asset_amount,
                 limit_price,
+            }),
+        };
+
+        self.ixs.push(liquidate_ix);
+        self
+    }
+
+    /// Liquidate a perp position with fill for a given user.
+    ///
+    /// This method constructs a liquidation instruction for a perpetual market position that includes
+    /// maker orders to fill the liquidated position. The liquidator will be the subaccount associated
+    /// with this `TransactionBuilder` (i.e., the builder's default subaccount).
+    ///
+    /// # Parameters
+    /// - `market_index`: The index of the perp market to liquidate on.
+    /// - `liquidatee`: The user account (liquidatee) whose position will be liquidated.
+    /// - `makers`: Array of maker users whose orders will be used to fill the liquidated position.
+    ///
+    /// # Returns
+    /// Returns an updated `TransactionBuilder` with the liquidation instruction appended.
+    pub fn liquidate_perp_with_fill(
+        mut self,
+        market_index: u16,
+        liquidatee: &User,
+        makers: &[User],
+    ) -> Self {
+        let mut accounts = build_accounts(
+            self.program_data,
+            types::accounts::LiquidatePerpWithFill {
+                state: *state_account(),
+                authority: self.authority,
+                user: Wallet::derive_user_account(&liquidatee.authority, liquidatee.sub_account_id),
+                user_stats: Wallet::derive_stats_account(&liquidatee.authority),
+                liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
+            },
+            [&self.account_data, liquidatee].into_iter().chain(makers),
+            std::iter::empty(),
+            std::iter::once(&MarketId::perp(market_index)),
+        );
+
+        for maker in makers {
+            accounts.extend([
+                AccountMeta::new(
+                    Wallet::derive_user_account(&maker.authority, maker.sub_account_id),
+                    false,
+                ),
+                AccountMeta::new(Wallet::derive_stats_account(&maker.authority), false),
+            ]);
+        }
+
+        let liquidate_ix = Instruction {
+            program_id: PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_idl::instructions::LiquidatePerpWithFill {
+                market_index,
             }),
         };
 

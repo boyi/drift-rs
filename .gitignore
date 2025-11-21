@@ -6,3 +6,4 @@ target
 .vscode
 .env
 sync*.sh
+.DS_Store
