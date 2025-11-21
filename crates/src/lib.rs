@@ -3503,6 +3503,8 @@ impl<'a> TransactionBuilder<'a> {
     ) -> Self {
         let accounts = build_accounts(
             self.program_data,
+            self.perp_market_map,
+            self.spot_market_map,
             types::accounts::LiquidateSpot {
                 state: *state_account(),
                 authority: self.authority,
@@ -3569,6 +3571,8 @@ impl<'a> TransactionBuilder<'a> {
 
         let accounts = build_accounts(
             self.program_data,
+            self.perp_market_map,
+            self.spot_market_map,
             types::accounts::LiquidateSpotWithSwapBegin {
                 state: *state_account(),
                 authority: self.authority,
@@ -3646,6 +3650,8 @@ impl<'a> TransactionBuilder<'a> {
 
         let accounts = build_accounts(
             self.program_data,
+            self.perp_market_map,
+            self.spot_market_map,
             types::accounts::LiquidateSpotWithSwapEnd {
                 state: *state_account(),
                 authority: self.authority,
@@ -3767,6 +3773,8 @@ impl<'a> TransactionBuilder<'a> {
     ) -> Self {
         let mut accounts = build_accounts(
             self.program_data,
+            self.perp_market_map,
+            self.spot_market_map,
             types::accounts::LiquidatePerpWithFill {
                 state: *state_account(),
                 authority: self.authority,
