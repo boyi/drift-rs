@@ -51,7 +51,7 @@ spl-associated-token-account = "7.0"
 thiserror = "1"
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1.17"
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc", rev = "660797" }
 yellowstone-grpc-proto = { git = "https://github.com/rpcpool/yellowstone-grpc", rev = "660797" }
 drift-pubsub-client = { version = "0.1.1", path = "crates/pubsub-client" }
