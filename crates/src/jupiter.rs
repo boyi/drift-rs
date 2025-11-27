@@ -34,6 +34,7 @@ pub trait JupiterSwapApi {
         only_direct_routes: Option<bool>,
         excluded_dexes: Option<String>,
         transaction_config: Option<TransactionConfig>,
+        max_accounts: Option<usize>,
     ) -> impl std::future::Future<Output = SdkResult<JupiterSwapInfo>> + Send;
 }
 
@@ -90,6 +91,7 @@ impl JupiterSwapApi for DriftClient {
         only_direct_routes: Option<bool>,
         excluded_dexes: Option<String>,
         transaction_config: Option<TransactionConfig>,
+        max_accounts: Option<usize>,
     ) -> SdkResult<JupiterSwapInfo> {
         let jupiter_url =
             std::env::var("JUPITER_API_URL").unwrap_or(DEFAULT_JUPITER_API_URL.into());
@@ -108,7 +110,7 @@ impl JupiterSwapApi for DriftClient {
             only_direct_routes,
             excluded_dexes,
             restrict_intermediate_tokens: Some(true),
-            max_accounts: Some(48),
+            max_accounts,
             ..Default::default()
         };
 

@@ -53,6 +53,7 @@ async fn jupiter_swap_exact_in_udsc_to_sol() {
             Some(true),
             None,
             None,
+            None, 
         )
         .await
         .expect("got jup swap ixs");
@@ -121,6 +122,7 @@ async fn jupiter_swap_exact_out_udsc_to_sol() {
             Some(true),
             None,
             None,
+            None, 
         )
         .await
         .expect("got jup swap ixs");
@@ -199,6 +201,7 @@ async fn jupiter_swap_exact_out_udsc_jto() {
             Some(true),
             None,
             None,
+            None, 
         )
         .await
         .expect("got jup swap ixs");
@@ -268,6 +271,7 @@ async fn jupiter_swap_sol_unwrap() {
             Some(true),
             None,
             None,
+            None, 
         )
         .await
         .expect("got jup swap ixs");
