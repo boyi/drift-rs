@@ -59,6 +59,18 @@ pub enum SignedOrderType {
 }
 
 impl SignedOrderType {
+    pub fn delegated(order: SignedDelegateOrder) -> Self {
+        Self::Delegated {
+            inner: order,
+            raw: None,
+        }
+    }
+    pub fn authority(order: SignedOrder) -> Self {
+        Self::Authority {
+            inner: order,
+            raw: None,
+        }
+    }
     /// Returns true if this is a delegated signed msg order
     pub fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
@@ -161,6 +173,13 @@ pub struct SignedOrderInfo {
 }
 
 impl SignedOrderInfo {
+    /// Slot number when user signed the order
+    pub fn slot(&self) -> Slot {
+        match self.order {
+            SignedOrderType::Authority { inner, .. } => inner.slot,
+            SignedOrderType::Delegated { inner, .. } => inner.slot,
+        }
+    }
     /// The order's UUID (stringified)
     pub fn order_uuid_str(&self) -> &str {
         self.uuid.as_ref()
@@ -252,6 +271,47 @@ impl SignedOrderInfo {
             signature,
             will_sanitize: false,
             pre_deposit,
+        }
+    }
+
+    /// Build authority `SignedOrderInfo`
+    pub fn authority(
+        taker_authority: Pubkey,
+        signed_order: SignedOrder,
+        signature: Signature,
+    ) -> Self {
+        Self {
+            uuid: core::str::from_utf8(&signed_order.uuid)
+                .unwrap()
+                .to_string(),
+            ts: unix_now_ms(),
+            order: SignedOrderType::authority(signed_order),
+            signature,
+            signer: taker_authority,
+            taker_authority,
+            will_sanitize: false,
+            pre_deposit: None,
+        }
+    }
+
+    /// Build delegated `SignedOrderInfo`
+    pub fn delegated(
+        taker_authority: Pubkey,
+        signing_authority: Pubkey,
+        delegated_order: SignedDelegateOrder,
+        signature: Signature,
+    ) -> Self {
+        Self {
+            uuid: core::str::from_utf8(&delegated_order.uuid)
+                .unwrap()
+                .to_string(),
+            ts: unix_now_ms(),
+            order: SignedOrderType::delegated(delegated_order),
+            signature,
+            signer: signing_authority,
+            taker_authority,
+            will_sanitize: false,
+            pre_deposit: None,
         }
     }
 

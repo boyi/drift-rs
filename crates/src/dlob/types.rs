@@ -150,6 +150,25 @@ pub enum DLOBEvent {
     Deltas { deltas: Vec<OrderDelta>, slot: u64 },
 }
 
+/// Event type for tracking order lifecycle
+#[derive(Debug, Clone)]
+pub enum OrderEventType {
+    Insert,
+    Update,
+    Remove,
+}
+
+/// Event log entry for an order
+#[derive(Debug, Clone)]
+pub struct OrderEvent {
+    pub event_type: OrderEventType,
+    pub slot: u64,
+    pub order: Option<Order>,
+    pub old_order: Option<Order>, // Only present for Update events
+    pub user: Pubkey,
+    pub order_id: u64, // DLOB internal order ID
+}
+
 /// Order with dynamic price calculation
 pub(crate) trait DynamicPrice {
     fn get_price(&self, slot: u64, oracle_price: u64, tick_size: u64) -> Option<u64>;
@@ -176,7 +195,7 @@ impl MarketOrder {
     }
     /// Check if this auction order has completed
     pub fn is_auction_complete(&self, current_slot: u64) -> bool {
-        current_slot.saturating_sub(self.slot) >= self.duration as u64
+        current_slot.saturating_sub(self.slot) > self.duration as u64
     }
 
     /// Convert to LimitOrder when auction completes
@@ -207,7 +226,7 @@ impl OracleOrder {
     }
     /// Check if this auction order has completed
     pub fn is_auction_complete(&self, current_slot: u64) -> bool {
-        current_slot.saturating_sub(self.slot) >= self.duration as u64
+        current_slot.saturating_sub(self.slot) > self.duration as u64
     }
 
     /// Convert to FloatingLimitOrder when auction completes
