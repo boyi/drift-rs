@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Default Jupiter API url
-const DEFAULT_JUPITER_API_URL: &str = "https://lite-api.jup.ag/swap/v1";
+const DEFAULT_JUPITER_API_URL: &str = "https://api.jup.ag/swap/v1";
 
 /// jupiter swap IXs and metadata for building a swap Tx
 pub struct JupiterSwapInfo {
@@ -95,7 +95,9 @@ impl JupiterSwapApi for DriftClient {
     ) -> SdkResult<JupiterSwapInfo> {
         let jupiter_url =
             std::env::var("JUPITER_API_URL").unwrap_or(DEFAULT_JUPITER_API_URL.into());
-        let jup_client = JupiterSwapApiClient::new(jupiter_url);
+        let jupiter_api_key = std::env::var("JUPITER_API_KEY")
+            .map_err(|_| SdkError::Generic("JUPITER_API_KEY environment variable is required".to_string()))?;
+        let jup_client = JupiterSwapApiClient::with_api_key(jupiter_url, Some(jupiter_api_key));
 
         let in_market = self.try_get_spot_market_account(in_market)?;
         let out_market = self.try_get_spot_market_account(out_market)?;
