@@ -154,6 +154,12 @@ pub struct GrpcConnectionOpts {
     max_decoding_message_size: usize,
     /// Whether to use TLS/HTTPS. None means auto-detect based on endpoint URL scheme
     use_tls: Option<bool>,
+    /// Maximum retry attempts for reconnection. 0 means infinite retries. Default: 0
+    pub max_retries: u32,
+    /// Maximum backoff time in seconds between retries. Default: 300 (5 minutes)
+    pub max_backoff_secs: u64,
+    /// Initial backoff time in seconds. Default: 4
+    pub initial_backoff_secs: u64,
 }
 
 impl Default for GrpcConnectionOpts {
@@ -172,7 +178,30 @@ impl Default for GrpcConnectionOpts {
             timeout_ms: None,
             max_decoding_message_size: 1024 * 1024 * 1024,
             use_tls: None,
+            max_retries: 0,           // 0 = infinite retries
+            max_backoff_secs: 300,    // 5 minutes max backoff
+            initial_backoff_secs: 4,  // start with 4 seconds
         }
+    }
+}
+
+impl GrpcConnectionOpts {
+    /// Set maximum retry attempts for reconnection. 0 means infinite retries.
+    pub fn max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Set maximum backoff time in seconds between retries.
+    pub fn max_backoff_secs(mut self, secs: u64) -> Self {
+        self.max_backoff_secs = secs;
+        self
+    }
+
+    /// Set initial backoff time in seconds.
+    pub fn initial_backoff_secs(mut self, secs: u64) -> Self {
+        self.initial_backoff_secs = secs;
+        self
     }
 }
 
@@ -332,7 +361,8 @@ impl DriftGrpcClient {
         let (unsub_tx, mut unsub_rx) = tokio::sync::oneshot::channel::<()>();
 
         // gRPC receives updates very frequently, don't want tokio scheduler moving it
-        std::thread::spawn(|| {
+        let grpc_opts = self.grpc_opts.clone().unwrap_or_default();
+        std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -345,6 +375,9 @@ impl DriftGrpcClient {
                 self.on_transaction_hooks,
                 self.on_slot,
                 self.on_block_meta,
+                grpc_opts.max_retries,
+                grpc_opts.max_backoff_secs,
+                grpc_opts.initial_backoff_secs,
             ));
             let mut waiter = FuturesUnordered::new();
             waiter.push(geyser_task);
@@ -381,26 +414,43 @@ impl DriftGrpcClient {
         on_transaction: TransactionHooks,
         on_slot: impl Fn(Slot),
         on_block_meta: impl Fn(SubscribeUpdateBlockMeta),
+        max_retries: u32,
+        max_backoff_secs: u64,
+        initial_backoff_secs: u64,
     ) -> Option<GrpcError> {
-        let max_retries = 3;
-        let mut retry_count = 0;
+        let mut retry_count: u32 = 0;
         let mut latest_slot = 0;
         let mut last_error: Option<GrpcError> = None;
         loop {
-            if retry_count >= max_retries {
-                log::warn!(target: "grpc", "max retry attempts reached. disconnecting...");
+            // 0 = infinite retries
+            if max_retries > 0 && retry_count >= max_retries {
+                log::error!(target: "grpc", "max retry attempts ({}) reached. disconnecting...", max_retries);
                 break;
             }
             let (mut subscribe_tx, mut stream) =
                 match client.subscribe_with_request(Some(request.clone())).await {
                     Ok(res) => {
+                        if retry_count > 0 {
+                            log::info!(target: "grpc", "gRPC reconnected successfully after {} retries", retry_count);
+                        }
                         retry_count = 0;
                         res
                     }
                     Err(err) => {
-                        log::warn!(target: "grpc", "failed subscription: {err:?}");
                         retry_count += 1;
-                        tokio::time::sleep(Duration::from_secs(2_u64.pow(retry_count + 1))).await;
+                        // Calculate backoff with upper limit
+                        let backoff_secs = std::cmp::min(
+                            initial_backoff_secs.saturating_mul(2_u64.pow(retry_count.min(10))),
+                            max_backoff_secs
+                        );
+                        log::warn!(
+                            target: "grpc",
+                            "gRPC subscription failed: {err:?}. Retry {}{} in {}s",
+                            retry_count,
+                            if max_retries > 0 { format!("/{}", max_retries) } else { " (unlimited)".to_string() },
+                            backoff_secs
+                        );
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                         let _ = last_error.insert(GrpcError::Client(err));
                         continue;
                     }
